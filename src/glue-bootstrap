@@ -1,0 +1,45 @@
+#!/bin/bash
+#
+# glue-bootstrap
+#
+# Checks that the Puppet SSL keypair exists; creates it if it doesn't.
+#
+
+PUPPET=/opt/puppetlabs/bin/puppet
+ENVIRONMENT="$($PUPPET agent --configprint environment)"
+SSLDIR="$($PUPPET agent --configprint ssldir)"
+CACERT="$($PUPPET agent --configprint localcacert)"
+CASERVER="$($PUPPET agent --configprint ca_server)"
+CAPORT="$($PUPPET agent --configprint ca_port)"
+HOSTCERT="$($PUPPET agent --configprint hostcert)"
+HOSTKEY="$($PUPPET agent --configprint hostprivkey)"
+
+# No need to do anything if keypair exists
+[ -e "$HOSTCERT" -a -e "$HOSTKEY" ] && exit 0
+
+# Otherwise, remove the SSL directory and start over
+rm -rf "$SSLDIR"
+$PUPPET certificate generate "$CERTNAME" --ca-location remote
+
+# Even though the Puppet CA is configured to accept duplicate
+# cert requests, if the CA already has a signed cert for this system
+# it will provide it due to https://tickets.puppetlabs.com/browse/PUP-2354
+#
+# This works around the issue by using the API to bypass the existing
+# certificate check, leaving it up to the autosign policy to decide what
+# to do.
+if [ $? -ne 0 ]; then
+    openssl req -new -key "$HOSTKEY" -subj "/CN=${CERTNAME}" |
+        curl --upload-file - --header "Content-Type: text/plain" \
+             --cacert "$CACERT" "https://${CASERVER}:${CAPORT}/puppet-ca/v1/certificate_request/${CERTNAME}?environment=${ENVIRONMENT}" \
+             --output "${HOSTCERT}.tmp"
+
+    # Validate that the server returned a real certificate
+    openssl x509 -in "${HOSTCERT}.tmp" -out "${HOSTCERT}" && rm -f "${HOSTCERT}.tmp"
+
+    if [ $? -ne 0 ]; then
+        # Clean up and inform service manager of failure
+        rm -rf "$SSLDIR"
+        exit 1
+    fi
+fi
