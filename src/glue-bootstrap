@@ -7,6 +7,7 @@
 
 PUPPET=/opt/puppetlabs/bin/puppet
 ENVIRONMENT="$($PUPPET agent --configprint environment)"
+CERTNAME="$($PUPPET agent --configprint certname)"
 SSLDIR="$($PUPPET agent --configprint ssldir)"
 CACERT="$($PUPPET agent --configprint localcacert)"
 CASERVER="$($PUPPET agent --configprint ca_server)"
@@ -15,11 +16,21 @@ HOSTCERT="$($PUPPET agent --configprint hostcert)"
 HOSTKEY="$($PUPPET agent --configprint hostprivkey)"
 
 # No need to do anything if keypair exists
-[ -e "$HOSTCERT" -a -e "$HOSTKEY" ] && exit 0
+if [ -e "$HOSTCERT" -a -e "$HOSTKEY" ]; then
+    echo "Puppet SSL certificate already exists."
+    exit 0
+fi
 
 # Otherwise, remove the SSL directory and start over
+echo -n "Requesting Puppet SSL certificate..."
 rm -rf "$SSLDIR"
-$PUPPET certificate generate "$CERTNAME" --ca-location remote
+$PUPPET certificate generate "$CERTNAME" --ca-location remote > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "ok"
+    exit 0
+else
+    echo "failed"
+fi
 
 # Even though the Puppet CA is configured to accept duplicate
 # cert requests, if the CA already has a signed cert for this system
@@ -28,18 +39,21 @@ $PUPPET certificate generate "$CERTNAME" --ca-location remote
 # This works around the issue by using the API to bypass the existing
 # certificate check, leaving it up to the autosign policy to decide what
 # to do.
-if [ $? -ne 0 ]; then
-    openssl req -new -key "$HOSTKEY" -subj "/CN=${CERTNAME}" |
-        curl --upload-file - --header "Content-Type: text/plain" \
-             --cacert "$CACERT" "https://${CASERVER}:${CAPORT}/puppet-ca/v1/certificate_request/${CERTNAME}?environment=${ENVIRONMENT}" \
-             --output "${HOSTCERT}.tmp"
+echo -n "Requesting Puppet SSL certificate a different way..."
 
-    # Validate that the server returned a real certificate
-    openssl x509 -in "${HOSTCERT}.tmp" -out "${HOSTCERT}" && rm -f "${HOSTCERT}.tmp"
+openssl req -new -key "$HOSTKEY" -subj "/CN=${CERTNAME}" |
+curl --upload-file - --header "Content-Type: text/plain" \
+     --cacert "$CACERT" "https://${CASERVER}:${CAPORT}/puppet-ca/v1/certificate_request/${CERTNAME}?environment=${ENVIRONMENT}" \
+     --output "${HOSTCERT}.tmp" > /dev/null 2>&1
 
-    if [ $? -ne 0 ]; then
-        # Clean up and inform service manager of failure
-        rm -rf "$SSLDIR"
-        exit 1
-    fi
+# Validate that the server returned a real certificate
+openssl x509 -in "${HOSTCERT}.tmp" -out "${HOSTCERT}" > /dev/null 2>&1 && rm -f "${HOSTCERT}.tmp"
+
+if [ $? -eq 0 ]; then
+    echo "ok"
+else
+    # Clean up and inform service manager of failure
+    echo "failed"
+    rm -rf "$SSLDIR"
+    exit 1
 fi
