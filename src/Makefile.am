@@ -1,1 +1,1 @@
-sbin_SCRIPTS = glue-bootstrap
+dist_sbin_SCRIPTS = glue-bootstrap
