@@ -1,2 +1,13 @@
+[Unit]
+Description=Glue Bootstrap
+Wants=network-online.target
+After=network-online.target
+Before=puppet.service
+
 [Service]
+Type=oneshot
 ExecStart=@sbindir@/glue-bootstrap
+RemainAfterExit=yes
+
+[Install]
+WantedBy=puppet.service
